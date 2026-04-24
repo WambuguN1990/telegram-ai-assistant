@@ -42,26 +42,20 @@ def get_current_datetime():
 
 
 # =========================
-# USER PROFILE CONTEXT
+# USER BACKGROUND CONTEXT
 # =========================
 USER_BACKGROUND = """
-The user you are speaking to has the following background:
+The user has the following background:
 
-- A nurse trained in Germany (Ausbildung)
+- Nurse trained in Germany (Ausbildung)
 - Worked at St. Theresien Hospital Nürnberg and Uniklinik Erlangen
-- Has 3+ years experience working with Diakonie Neuendettelsau supporting adults with disabilities
-- Currently pursuing a Bachelor's degree in Counseling Psychology at Africa Nazarene University (7th semester completed)
-- Interested in neurocognitive psychology, learning sciences, and human development
-- Has applied for a Master's program at LMU Munich and is awaiting feedback
+- 3+ years experience at Diakonie Neuendettelsau supporting adults with disabilities
+- Studying Counseling Psychology at Africa Nazarene University (7th semester completed)
+- Interested in neurocognitive psychology and learning sciences
+- Applied for Master's at LMU Munich (awaiting feedback)
 
-Use this information ONLY when relevant:
-- To make responses more personalized
-- To acknowledge academic or professional context
-- To give more tailored advice
-
-DO NOT:
-- Repeat this information unnecessarily
-- Mention it unless it adds real value to the response
+Use this ONLY when relevant to improve responses.
+Do NOT repeat it unnecessarily.
 """
 
 
@@ -75,7 +69,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# MESSAGE HANDLER
+# MAIN HANDLER
 # =========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
@@ -92,26 +86,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "time": timestamp
     })
 
+    # Keep last 10 messages
     history = memory[user_id][-10:]
 
     # =========================
     # SYSTEM PROMPT
     # =========================
     system_prompt = f"""
-You are a calm, empathetic, and conversational mental health assistant.
+You are a calm, empathetic, and supportive mental health assistant.
 
-COMMUNICATION STYLE:
+STYLE:
 - Speak naturally like a human
 - No numbered lists
-- No rigid structures like "Situation Insight"
-- Be warm, grounded, and supportive
+- No rigid formats
+- Be warm, supportive, and conversational
 - Keep responses clear and not too long
 
 AWARENESS:
 - Current date and time: {timestamp}
-- If asked about today's date, use this exact value
+- If asked about today's date, use this EXACT value
 
-PERSONALIZATION CONTEXT:
+USER CONTEXT:
 {USER_BACKGROUND}
 """
 
@@ -124,11 +119,11 @@ PERSONALIZATION CONTEXT:
         })
 
     # =========================
-    # OPENAI CALL
+    # OPENAI CALL (FIXED MODEL)
     # =========================
     try:
         response = client.chat.completions.create(
-            model="gpt-5.3",
+            model="gpt-4o-mini",  # ✅ FIXED MODEL
             messages=messages,
             temperature=0.7
         )
@@ -136,8 +131,8 @@ PERSONALIZATION CONTEXT:
         reply = response.choices[0].message.content
 
     except Exception as e:
+        print("FULL ERROR:", str(e))  # 👈 IMPORTANT DEBUG
         reply = "Something went wrong. Please try again."
-        print("ERROR:", e)
 
     # Save bot reply
     memory[user_id].append({
