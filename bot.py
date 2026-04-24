@@ -1,7 +1,9 @@
 import os
 import json
+import asyncio
 from datetime import datetime
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 
@@ -17,7 +19,7 @@ MEMORY_FILE = "memory.json"
 
 
 # =========================
-# LOAD / SAVE MEMORY
+# MEMORY SYSTEM
 # =========================
 def load_memory():
     if not os.path.exists(MEMORY_FILE):
@@ -28,117 +30,168 @@ def load_memory():
 
 def save_memory(memory):
     with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(memory, f, indent=4)
+        json.dump(memory, f, indent=2)
 
 
 memory = load_memory()
 
 
-# =========================
-# CURRENT DATE
-# =========================
-def get_current_datetime():
+def get_time():
     return datetime.now().strftime("%A, %B %d, %Y %H:%M")
 
 
 # =========================
-# USER BACKGROUND CONTEXT
+# USER BACKGROUND
 # =========================
 USER_BACKGROUND = """
-The user has the following background:
+User background:
+- Nurse trained in Germany
+- Worked at St. Theresien Nürnberg & Uniklinik Erlangen
+- 3 years at Diakonie Neuendettelsau
+- Studying Counseling Psychology (Africa Nazarene University)
+- Interested in Neurocognitive Psychology
+- Applied to LMU Munich
 
-- Nurse trained in Germany (Ausbildung)
-- Worked at St. Theresien Hospital Nürnberg and Uniklinik Erlangen
-- 3+ years experience at Diakonie Neuendettelsau supporting adults with disabilities
-- Studying Counseling Psychology at Africa Nazarene University (7th semester completed)
-- Interested in neurocognitive psychology and learning sciences
-- Applied for Master's at LMU Munich (awaiting feedback)
-
-Use this ONLY when relevant to improve responses.
-Do NOT repeat it unnecessarily.
+Use ONLY when relevant.
 """
 
 
 # =========================
-# START COMMAND
+# SAFE OPENAI CALL
+# =========================
+def ask_ai(messages):
+    try:
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.7
+        )
+        return res.choices[0].message.content
+    except Exception as e:
+        print("ERROR 1:", e)
+        try:
+            res = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.7
+            )
+            return res.choices[0].message.content
+        except Exception as e2:
+            print("ERROR 2:", e2)
+            return "I'm here with you — something glitched. Try again."
+
+
+# =========================
+# EMOTION DETECTION
+# =========================
+def detect_emotion(text):
+    emotions = {
+        "stress": ["stress", "tired", "overwhelmed"],
+        "anxiety": ["anxious", "worried", "fear"],
+        "sadness": ["sad", "down", "lonely"],
+        "positive": ["happy", "good", "excited"]
+    }
+
+    for label, words in emotions.items():
+        for w in words:
+            if w in text.lower():
+                return label
+    return "neutral"
+
+
+# =========================
+# MEMORY SUMMARIZATION
+# =========================
+def summarize_history(user_id):
+    history = memory[user_id][-20:]
+
+    messages = [
+        {"role": "system", "content": "Summarize this conversation briefly."}
+    ]
+
+    for h in history:
+        messages.append({"role": h["role"], "content": h["message"]})
+
+    summary = ask_ai(messages)
+    memory[user_id] = [{"role": "system", "message": summary, "time": get_time()}]
+
+
+# =========================
+# START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hey 👋 I'm here for you.\n\nTell me what's on your mind."
-    )
+    await update.message.reply_text("Hey 👋 I'm here for you. What's on your mind?")
+
+
+# =========================
+# JOURNAL COMMAND
+# =========================
+async def journal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+
+    if user_id not in memory:
+        await update.message.reply_text("No entries yet.")
+        return
+
+    entries = memory[user_id][-5:]
+    text = "\n\n".join([f"{e['time']}\n{e['message']}" for e in entries])
+
+    await update.message.reply_text("Your recent reflections:\n\n" + text)
 
 
 # =========================
 # MAIN HANDLER
 # =========================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
-    user_message = update.message.text
-    timestamp = get_current_datetime()
+    text = update.message.text
+    now = get_time()
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     if user_id not in memory:
         memory[user_id] = []
 
-    # Save user message
+    emotion = detect_emotion(text)
+
     memory[user_id].append({
         "role": "user",
-        "message": user_message,
-        "time": timestamp
+        "message": text,
+        "time": now,
+        "emotion": emotion
     })
 
-    # Keep last 10 messages
-    history = memory[user_id][-10:]
+    # Long-term memory trigger
+    if len(memory[user_id]) > 30:
+        summarize_history(user_id)
 
-    # =========================
-    # SYSTEM PROMPT
-    # =========================
     system_prompt = f"""
-You are a calm, empathetic, and supportive mental health assistant.
+You are a supportive, human-like mental health assistant.
 
 STYLE:
-- Speak naturally like a human
-- No numbered lists
-- No rigid formats
-- Be warm, supportive, and conversational
-- Keep responses clear and not too long
+- Natural conversation
+- No lists or structure
+- Warm, calm, human
 
-AWARENESS:
-- Current date and time: {timestamp}
-- If asked about today's date, use this EXACT value
+CONTEXT:
+Time: {now}
+Emotion detected: {emotion}
 
-USER CONTEXT:
+USER:
 {USER_BACKGROUND}
 """
 
     messages = [{"role": "system", "content": system_prompt}]
 
-    for msg in history:
-        messages.append({
-            "role": msg["role"],
-            "content": msg["message"]
-        })
+    for m in memory[user_id][-10:]:
+        messages.append({"role": m["role"], "content": m["message"]})
 
-    # =========================
-    # OPENAI CALL (FIXED MODEL)
-    # =========================
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # ✅ FIXED MODEL
-            messages=messages,
-            temperature=0.7
-        )
+    reply = ask_ai(messages)
 
-        reply = response.choices[0].message.content
-
-    except Exception as e:
-        print("FULL ERROR:", str(e))  # 👈 IMPORTANT DEBUG
-        reply = "Something went wrong. Please try again."
-
-    # Save bot reply
     memory[user_id].append({
         "role": "assistant",
         "message": reply,
-        "time": timestamp
+        "time": now
     })
 
     save_memory(memory)
@@ -147,15 +200,16 @@ USER CONTEXT:
 
 
 # =========================
-# RUN BOT
+# RUN
 # =========================
 def main():
-    print("RUNNING ADVANCED AI BOT...")
+    print("RUNNING ADVANCED AI SYSTEM...")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("journal", journal))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
     app.run_polling()
 
